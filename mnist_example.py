@@ -45,23 +45,49 @@ def train(args, model, device, train_loader, optimizer, epoch, data_idx):
                        100. * batch_idx * len(data) // len(data_idx), loss.item()))
 
 
-def test(args, model, device, test_loader, data_idx):
+def test(args, model, device, test_loader, data_idx, epoch):
     model.eval()
     test_loss = 0
     correct = 0
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
-            pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
-            correct += pred.eq(target.view_as(pred)).sum().item()
 
-    test_loss /= len(test_loader.dataset)
+    if epoch == args.epochs and args.base_prediction:
+        print('------start final prediction and save the result-----')
+        with torch.no_grad():
+            for data, target in test_loader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                correct += pred.eq(target.view_as(pred)).sum().item()
+                try:
+                    predictions = np.concatenate((predictions,output.data.cpu().numpy()), 0)
+                    labels = np.concatenate((labels,target.data.cpu().numpy()), 0)
+                except:
+                    predictions = output.data.cpu().numpy()
+                    labels = target.data.cpu().numpy()
 
-    print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
-        test_loss, correct, len(data_idx),
-        100. * correct / len(data_idx)))
+        test_loss /= len(test_loader.dataset)
+
+        print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+            test_loss, correct, len(data_idx),
+            100. * correct / len(data_idx)))
+
+        return predictions, labels
+
+    else:
+        with torch.no_grad():
+            for data, target in test_loader:
+                data, target = data.to(device), target.to(device)
+                output = model(data)
+                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+                pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
+                correct += pred.eq(target.view_as(pred)).sum().item()
+
+        test_loss /= len(test_loader.dataset)
+
+        print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
+            test_loss, correct, len(data_idx),
+            100. * correct / len(data_idx)))
 
 
 def main():
@@ -71,7 +97,7 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=3, metavar='N',
+    parser.add_argument('--epochs', type=int, default=2, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -85,6 +111,8 @@ def main():
                         help='how many batches to wait before logging training status')
     parser.add_argument('--k-fold', type=int, default=6,
                         help='How many folds')
+    parser.add_argument('--base-prediction', type=bool, default=True,
+                        help='save base learner prediction ')
 
     parser.add_argument('--save-model', action='store_true', default=True,
                         help='For Saving the current Model')
@@ -107,6 +135,7 @@ def main():
 
     train_idxs, val_idxs = index_gen(trainset, seed = 100, k=args.k_fold)
 
+
     for fold in range(args.k_fold):
         print('Start {}-th fold trian'.format(fold))
         train_loader = torch.utils.data.DataLoader(trainset,
@@ -120,9 +149,25 @@ def main():
 
         for epoch in range(1, args.epochs + 1):
             train(args, model, device, train_loader, optimizer, epoch, train_idxs[fold])
-            test(args, model, device, val_loader, val_idxs[fold])
+            if epoch == args.epochs and args.base_prediction:
+                predictions, labels = test(args, model, device, val_loader, val_idxs[fold], epoch)
+                try:
+                    predictions_folds = np.concatenate((predictions_folds, predictions), 0)
+                    labels_folds = np.concatenate((labels_folds, labels), 0)
+                except:
+                    predictions_folds = predictions
+                    labels_folds = labels
+            else:
+                test(args, model, device, val_loader, val_idxs[fold], epoch)
 
-        if (args.save_model):
+        if args.base_prediction and fold == args.k_fold-1:
+            print(predictions_folds.shape)
+            print(labels_folds.shape)
+            np.save('./base_learner_prediction/x.npy',predictions_folds)
+            np.save('./base_learner_prediction/y.npy',labels_folds)
+
+
+        if args.save_model:
             torch.save(model.state_dict(), "./base_learner/[{}-th fold]mnist_cnn.pt".format(fold))
 
 
