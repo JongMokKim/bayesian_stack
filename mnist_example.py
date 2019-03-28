@@ -9,16 +9,21 @@ from torchvision import datasets, transforms
 from torch.utils.data.sampler import Sampler, SubsetRandomSampler
 import numpy as np
 from sklearn.model_selection import StratifiedKFold
+
 from DataSampler import index_gen
+from utils.loss import UncertaintyLoss
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, args):
         super(Net, self).__init__()
         self.conv1 = nn.Conv2d(1, 20, 5, 1)
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4 * 4 * 50, 500)
         self.fc2 = nn.Linear(500, 10)
-
+        self.args = args
+        if args.uncertainty:
+            self.fc2_var = nn.Linear(500,10)
+            self.softp = nn.Softplus()
     def forward(self, x):
         x = F.relu(self.conv1(x))
         x = F.max_pool2d(x, 2, 2)
@@ -26,8 +31,14 @@ class Net(nn.Module):
         x = F.max_pool2d(x, 2, 2)
         x = x.view(-1, 4 * 4 * 50)
         x = F.relu(self.fc1(x))
-        x = self.fc2(x)
-        return F.log_softmax(x, dim=1)
+        if not self.args.uncertainty:
+            x = self.fc2(x)
+            return F.log_softmax(x, dim=1)
+        else:
+            x_mu = self.fc2(x)
+            x_var = self.fc2_var(x)
+            x_var_pos = self.softp(x_var)
+            return x_mu, x_var_pos
 
 
 def train(args, model, device, train_loader, optimizer, epoch, data_idx):
@@ -35,8 +46,12 @@ def train(args, model, device, train_loader, optimizer, epoch, data_idx):
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
-        output = model(data)
-        loss = F.nll_loss(output, target)
+        if args.uncertainty:
+            output, output_sigma = model(data)
+            loss = UncertaintyLoss(output, output_sigma, target)
+        else:
+            output = model(data)
+            loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
@@ -55,8 +70,15 @@ def test(args, model, device, test_loader, data_idx, epoch):
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                output = model(data)
-                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+
+                if args.uncertainty:
+                    output, output_sigma = model(data)
+                    test_loss += UncertaintyLoss(output, output_sigma, target, reduction='sum')
+                else:
+                    output = model(data)
+                    test_loss += F.nll_loss(output, target, reduction='sum')
+                # output = model(data)
+                # test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
                 pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                 correct += pred.eq(target.view_as(pred)).sum().item()
                 try:
@@ -78,8 +100,14 @@ def test(args, model, device, test_loader, data_idx, epoch):
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
-                output = model(data)
-                test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
+                if args.uncertainty:
+                    output, output_sigma = model(data)
+                    test_loss += UncertaintyLoss(output, output_sigma, target, reduction='sum')
+                else:
+                    output = model(data)
+                    test_loss += F.nll_loss(output, target, reduction='sum')
+                # output = model(data)
+                # test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
                 pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                 correct += pred.eq(target.view_as(pred)).sum().item()
 
@@ -97,7 +125,7 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=2, metavar='N',
+    parser.add_argument('--epochs', type=int, default=100, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -113,6 +141,8 @@ def main():
                         help='How many folds')
     parser.add_argument('--base-prediction', type=bool, default=True,
                         help='save base learner prediction ')
+    parser.add_argument('--uncertainty', type=bool, default=True,
+                        help='predict mu and var ? ')
 
     parser.add_argument('--save-model', action='store_true', default=True,
                         help='For Saving the current Model')
@@ -123,7 +153,7 @@ def main():
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    kwargs = {'num_workers': 1, 'pin_memory': True} if use_cuda else {}
+    kwargs = {'num_workers': 2, 'pin_memory': True} if use_cuda else {}
 
 
     train_transform = transforms.Compose([
@@ -144,7 +174,7 @@ def main():
         val_loader = torch.utils.data.DataLoader(trainset,
             batch_size=args.test_batch_size, sampler=SubsetRandomSampler(val_idxs[fold]) , shuffle=False, **kwargs)
 
-        model = Net().to(device)
+        model = Net(args).to(device)
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
         for epoch in range(1, args.epochs + 1):
