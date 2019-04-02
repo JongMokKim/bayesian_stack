@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 def UncertaintyLoss(logit_mu, logit_var, target, reduction='mean'):
+
+    var_loss = torch.mean(logit_var)
+
     n, _ = logit_mu.size()
 
     eps = torch.randn(10)
@@ -22,5 +25,6 @@ def UncertaintyLoss(logit_mu, logit_var, target, reduction='mean'):
 
     loss /= n
 
-    return loss
+    return loss + var_loss
+
 

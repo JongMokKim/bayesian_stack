@@ -22,7 +22,7 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(500, 10)
         self.args = args
         if args.uncertainty:
-            self.fc2_var = nn.Linear(500,10)
+            self.fc2_var = nn.Linear(500,1) ## var just scalar
             self.softp = nn.Softplus()
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -37,7 +37,7 @@ class Net(nn.Module):
         else:
             x_mu = self.fc2(x)
             x_var = self.fc2_var(x)
-            x_var_pos = self.softp(x_var)
+            x_var_pos = torch.exp(x_var)
             return x_mu, x_var_pos
 
 
@@ -47,8 +47,8 @@ def train(args, model, device, train_loader, optimizer, epoch, data_idx):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
         if args.uncertainty:
-            output, output_sigma = model(data)
-            loss = UncertaintyLoss(output, output_sigma, target)
+            output, output_var = model(data)
+            loss = UncertaintyLoss(output, output_var, target)
         else:
             output = model(data)
             loss = F.nll_loss(output, target)
@@ -72,8 +72,8 @@ def test(args, model, device, test_loader, data_idx, epoch):
                 data, target = data.to(device), target.to(device)
 
                 if args.uncertainty:
-                    output, output_sigma = model(data)
-                    test_loss += UncertaintyLoss(output, output_sigma, target, reduction='sum')
+                    output, output_var = model(data)
+                    test_loss += UncertaintyLoss(output, output_var, target, reduction='sum')
                 else:
                     output = model(data)
                     test_loss += F.nll_loss(output, target, reduction='sum')
@@ -81,28 +81,41 @@ def test(args, model, device, test_loader, data_idx, epoch):
                 # test_loss += F.nll_loss(output, target, reduction='sum').item()  # sum up batch loss
                 pred = output.argmax(dim=1, keepdim=True)  # get the index of the max log-probability
                 correct += pred.eq(target.view_as(pred)).sum().item()
-                try:
-                    predictions = np.concatenate((predictions,output.data.cpu().numpy()), 0)
-                    labels = np.concatenate((labels,target.data.cpu().numpy()), 0)
-                except:
-                    predictions = output.data.cpu().numpy()
-                    labels = target.data.cpu().numpy()
+                if args.uncertainty:
+                    try:
+                        predictions_mu = np.concatenate((predictions_mu,output.data.cpu().numpy()), 0)
+                        predictions_var = np.concatenate((predictions_var,output.data.cpu().numpy()), 0)
+                        labels = np.concatenate((labels,target.data.cpu().numpy()), 0)
+                    except:
+                        predictions_mu = output.data.cpu().numpy()
+                        predictions_var = output_var.data.cpu().numpy()
+                        labels = target.data.cpu().numpy()
+                    
+                else:                        
+                    try:
+                        predictions = np.concatenate((predictions,output.data.cpu().numpy()), 0)
+                        labels = np.concatenate((labels,target.data.cpu().numpy()), 0)
+                    except:
+                        predictions = output.data.cpu().numpy()
+                        labels = target.data.cpu().numpy()
 
         test_loss /= len(test_loader.dataset)
 
         print('\nTest set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'.format(
             test_loss, correct, len(data_idx),
             100. * correct / len(data_idx)))
-
-        return predictions, labels
+        if args.uncertainty:
+            return predictions_mu, predictions_var, labels
+        else:
+            return predictions, labels
 
     else:
         with torch.no_grad():
             for data, target in test_loader:
                 data, target = data.to(device), target.to(device)
                 if args.uncertainty:
-                    output, output_sigma = model(data)
-                    test_loss += UncertaintyLoss(output, output_sigma, target, reduction='sum')
+                    output, output_var = model(data)
+                    test_loss += UncertaintyLoss(output, output_var, target, reduction='sum')
                 else:
                     output = model(data)
                     test_loss += F.nll_loss(output, target, reduction='sum')
@@ -167,6 +180,7 @@ def main():
 
 
     for fold in range(args.k_fold):
+
         print('Start {}-th fold trian'.format(fold))
         train_loader = torch.utils.data.DataLoader(trainset,
             batch_size=args.batch_size, sampler=SubsetRandomSampler(train_idxs[fold]) , shuffle=False, **kwargs)
@@ -177,28 +191,46 @@ def main():
         model = Net(args).to(device)
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
+
         for epoch in range(1, args.epochs + 1):
+
             train(args, model, device, train_loader, optimizer, epoch, train_idxs[fold])
             if epoch == args.epochs and args.base_prediction:
-                predictions, labels = test(args, model, device, val_loader, val_idxs[fold], epoch)
-                try:
-                    predictions_folds = np.concatenate((predictions_folds, predictions), 0)
-                    labels_folds = np.concatenate((labels_folds, labels), 0)
-                except:
-                    predictions_folds = predictions
-                    labels_folds = labels
+                if args.uncertainty:
+                    predictions_mu, predictions_var, labels = test(args, model, device, val_loader, val_idxs[fold], epoch)
+                    try:
+                        predictions_mu_folds = np.concatenate((predictions_mu_folds, predictions_mu), 0)
+                        predictions_var_folds = np.concatenate((predictions_var_folds, predictions_var), 0)
+                        labels_folds = np.concatenate((labels_folds, labels), 0)
+                    except:
+                        predictions_mu_folds = predictions_mu
+                        predictions_var_folds = predictions_var
+                        labels_folds = labels
+                else:
+                    predictions, labels = test(args, model, device, val_loader, val_idxs[fold], epoch)
+                    try:
+                        predictions_folds = np.concatenate((predictions_folds, predictions), 0)
+                        labels_folds = np.concatenate((labels_folds, labels), 0)
+                    except:
+                        predictions_folds = predictions
+                        labels_folds = labels
             else:
                 test(args, model, device, val_loader, val_idxs[fold], epoch)
 
         if args.base_prediction and fold == args.k_fold-1:
-            print(predictions_folds.shape)
-            print(labels_folds.shape)
-            np.save('./base_learner_prediction/x.npy',predictions_folds)
-            np.save('./base_learner_prediction/y.npy',labels_folds)
+            if args.uncertainty:
+                np.save('./run/uncertainty_2/x_mu.npy',predictions_mu_folds)
+                np.save('./run/uncertainty_2/x_var.npy',predictions_var_folds)
+                np.save('./run/uncertainty_2/y.npy',labels_folds)
 
+            else:
+                np.save('./run/baseline/x.npy',predictions_folds)
+                np.save('./run/baseline/y.npy',labels_folds)
 
-        if args.save_model:
-            torch.save(model.state_dict(), "./base_learner/[{}-th fold]mnist_cnn.pt".format(fold))
+        if args.uncertainty:
+            torch.save(model.state_dict(), "./run/uncertainty_2/[{}-th fold]mnist_cnn.pt".format(fold))
+        else:
+            torch.save(model.state_dict(), "./run/baseline/[{}-th fold]mnist_cnn.pt".format(fold))
 
 
 if __name__ == '__main__':
