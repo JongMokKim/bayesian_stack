@@ -36,9 +36,9 @@ class Net(nn.Module):
             return F.log_softmax(x, dim=1)
         else:
             x_mu = self.fc2(x)
-            x_var = self.fc2_var(x)
-            x_var_pos = torch.exp(x_var)
-            return x_mu, x_var_pos
+            x_logvar = self.fc2_var(x)
+            x_var = torch.exp(x_logvar)
+            return x_mu, x_var
 
 
 def test(args, model, device, test_loader, data_idx, epoch):
@@ -145,7 +145,7 @@ def main():
             batch_size=args.test_batch_size, sampler=SubsetRandomSampler(val_idxs[fold]) , shuffle=False, **kwargs)
 
         model = Net(args).to(device)
-        model.load_state_dict(torch.load('./run/uncertainty/[{}-th fold]mnist_cnn.pt'.format(fold)))
+        model.load_state_dict(torch.load('./run/uncertainty_2/[{}-th fold]mnist_cnn.pt'.format(fold)))
 
         if args.uncertainty:
             predictions_mu, predictions_var, labels = test(args, model, device, val_loader, val_idxs[fold], 1)
@@ -168,9 +168,9 @@ def main():
 
         if args.base_prediction and fold == args.k_fold-1:
             if args.uncertainty:
-                np.save('./run/uncertainty/x_mu.npy',predictions_mu_folds)
-                np.save('./run/uncertainty/x_var.npy',predictions_var_folds)
-                np.save('./run/uncertainty/y.npy',labels_folds)
+                np.save('./run/uncertainty_2/x_mu.npy',predictions_mu_folds)
+                np.save('./run/uncertainty_2/x_var.npy',predictions_var_folds)
+                np.save('./run/uncertainty_2/y.npy',labels_folds)
 
             else:
                 np.save('./run/baseline/x.npy',predictions_folds)

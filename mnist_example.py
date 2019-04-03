@@ -20,9 +20,11 @@ class Net(nn.Module):
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4 * 4 * 50, 500)
         self.fc2 = nn.Linear(500, 10)
+        # self.fc3 = nn.Linear(250, 10)
         self.args = args
         if args.uncertainty:
-            self.fc2_var = nn.Linear(500,1) ## var just scalar
+            self.fc2_var = nn.Linear(500,10)
+            # self.fc3_var = nn.Linear(250,10)
             self.softp = nn.Softplus()
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -84,7 +86,7 @@ def test(args, model, device, test_loader, data_idx, epoch):
                 if args.uncertainty:
                     try:
                         predictions_mu = np.concatenate((predictions_mu,output.data.cpu().numpy()), 0)
-                        predictions_var = np.concatenate((predictions_var,output.data.cpu().numpy()), 0)
+                        predictions_var = np.concatenate((predictions_var,output_var.data.cpu().numpy()), 0)
                         labels = np.concatenate((labels,target.data.cpu().numpy()), 0)
                     except:
                         predictions_mu = output.data.cpu().numpy()
@@ -138,7 +140,7 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=100, metavar='N',
+    parser.add_argument('--epochs', type=int, default=10, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
                         help='learning rate (default: 0.01)')
@@ -219,16 +221,16 @@ def main():
 
         if args.base_prediction and fold == args.k_fold-1:
             if args.uncertainty:
-                np.save('./run/uncertainty_2/x_mu.npy',predictions_mu_folds)
-                np.save('./run/uncertainty_2/x_var.npy',predictions_var_folds)
-                np.save('./run/uncertainty_2/y.npy',labels_folds)
+                np.save('./run/uncertainty_gaussian/x_mu.npy',predictions_mu_folds)
+                np.save('./run/uncertainty_gaussian/x_var.npy',predictions_var_folds)
+                np.save('./run/uncertainty_gaussian/y.npy',labels_folds)
 
             else:
                 np.save('./run/baseline/x.npy',predictions_folds)
                 np.save('./run/baseline/y.npy',labels_folds)
 
         if args.uncertainty:
-            torch.save(model.state_dict(), "./run/uncertainty_2/[{}-th fold]mnist_cnn.pt".format(fold))
+            torch.save(model.state_dict(), "./run/uncertainty_gaussian/[{}-th fold]mnist_cnn.pt".format(fold))
         else:
             torch.save(model.state_dict(), "./run/baseline/[{}-th fold]mnist_cnn.pt".format(fold))
 
