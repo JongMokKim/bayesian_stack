@@ -11,7 +11,7 @@ import numpy as np
 from sklearn.model_selection import StratifiedKFold
 
 from DataSampler import index_gen
-from utils.loss import UncertaintyLoss
+from utils.loss import UncertaintyLoss, SoftRegressLoss
 
 class Net(nn.Module):
     def __init__(self, args):
@@ -20,11 +20,10 @@ class Net(nn.Module):
         self.conv2 = nn.Conv2d(20, 50, 5, 1)
         self.fc1 = nn.Linear(4 * 4 * 50, 500)
         self.fc2 = nn.Linear(500, 10)
-        # self.fc3 = nn.Linear(250, 10)
         self.args = args
         if args.uncertainty:
-            self.fc2_var = nn.Linear(500,10)
-            # self.fc3_var = nn.Linear(250,10)
+            self.fc1_var = nn.Linear(4*4*50, 500)
+            self.fc2_var = nn.Linear(500,1)
             self.softp = nn.Softplus()
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -32,15 +31,19 @@ class Net(nn.Module):
         x = F.relu(self.conv2(x))
         x = F.max_pool2d(x, 2, 2)
         x = x.view(-1, 4 * 4 * 50)
-        x = F.relu(self.fc1(x))
         if not self.args.uncertainty:
+            x = F.relu(self.fc1(x))
             x = self.fc2(x)
             return F.log_softmax(x, dim=1)
         else:
-            x_mu = self.fc2(x)
-            x_var = self.fc2_var(x)
-            x_var_pos = torch.exp(x_var)
-            return x_mu, x_var_pos
+            x_mu = F.relu(self.fc1(x))
+            x_mu = self.fc2(x_mu)
+
+            x_var = F.relu(self.fc1_var(x))
+            x_var = self.fc2_var(x_var)
+            x_var = self.softp(x_var)
+
+            return x_mu, x_var
 
 
 def train(args, model, device, train_loader, optimizer, epoch, data_idx):
@@ -50,7 +53,8 @@ def train(args, model, device, train_loader, optimizer, epoch, data_idx):
         optimizer.zero_grad()
         if args.uncertainty:
             output, output_var = model(data)
-            loss = UncertaintyLoss(output, output_var, target)
+            # loss = UncertaintyLoss(output, output_var, target)
+            loss = SoftRegressLoss(output, output_var, target)
         else:
             output = model(data)
             loss = F.nll_loss(output, target)
@@ -75,7 +79,8 @@ def test(args, model, device, test_loader, data_idx, epoch):
 
                 if args.uncertainty:
                     output, output_var = model(data)
-                    test_loss += UncertaintyLoss(output, output_var, target, reduction='sum')
+                    # test_loss += UncertaintyLoss(output, output_var, target)
+                    test_loss += SoftRegressLoss(output, output_var, target)
                 else:
                     output = model(data)
                     test_loss += F.nll_loss(output, target, reduction='sum')
@@ -117,7 +122,8 @@ def test(args, model, device, test_loader, data_idx, epoch):
                 data, target = data.to(device), target.to(device)
                 if args.uncertainty:
                     output, output_var = model(data)
-                    test_loss += UncertaintyLoss(output, output_var, target, reduction='sum')
+                    test_loss += UncertaintyLoss(output, output_var, target)
+                    test_loss += SoftRegressLoss(output, output_var, target)
                 else:
                     output = model(data)
                     test_loss += F.nll_loss(output, target, reduction='sum')
@@ -163,6 +169,9 @@ def main():
                         help='For Saving the current Model')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
+
+    args.trial_name = 'softmax_regression_softplus_3'
+
 
     torch.manual_seed(args.seed)
 
@@ -221,16 +230,16 @@ def main():
 
         if args.base_prediction and fold == args.k_fold-1:
             if args.uncertainty:
-                np.save('./run/uncertainty_gaussian/x_mu.npy',predictions_mu_folds)
-                np.save('./run/uncertainty_gaussian/x_var.npy',predictions_var_folds)
-                np.save('./run/uncertainty_gaussian/y.npy',labels_folds)
+                np.save('./run/{}/x_mu.npy'.format(args.trial_name),predictions_mu_folds)
+                np.save('./run/{}/x_var.npy'.format(args.trial_name),predictions_var_folds)
+                np.save('./run/{}/y.npy'.format(args.trial_name),labels_folds)
 
             else:
                 np.save('./run/baseline/x.npy',predictions_folds)
                 np.save('./run/baseline/y.npy',labels_folds)
 
         if args.uncertainty:
-            torch.save(model.state_dict(), "./run/uncertainty_gaussian/[{}-th fold]mnist_cnn.pt".format(fold))
+            torch.save(model.state_dict(), "./run/{}/[{}-th fold]mnist_cnn.pt".format(args.trial_name,fold))
         else:
             torch.save(model.state_dict(), "./run/baseline/[{}-th fold]mnist_cnn.pt".format(fold))
 
